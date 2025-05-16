@@ -1,7 +1,8 @@
 [package]
 name = "diesel_facet"
 version = "0.1.0"
-edition = "2024"
+ # needed to have const panic which allows outputing a const runtime string
+edition = "2018"
 
 [dependencies]
 diesel = { version = "2.2.10", default-features = false }

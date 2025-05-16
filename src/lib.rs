@@ -1,3 +1,5 @@
+use std::str;
+
 use diesel::backend::Backend;
 use diesel::connection::LoadConnection;
 use diesel::deserialize::FromSql;
@@ -117,6 +119,7 @@ where
     }
 }
 
+#[track_caller]
 fn query<'f, Q, T, C>(query: Q, conn: &mut C) -> QueryResult<Vec<T>>
 where
     T: Facet<'f>,
@@ -130,7 +133,16 @@ where
         match shape.ty {
             facet::Type::User(facet::UserType::Struct(s)) => {
                 if s.fields.len() != Q::SqlType::DESERIALIZER.len() {
-                    panic!("Expect the same number of fields in your rust struct as in your query");
+                    let mut buffer_a = [0_u8; 20];
+                    let mut buffer_b = [0_u8; 20];
+                    const_panic_with_arguments(
+                        "expected the same number of fields in your Rust struct as in your query\n
+                                                expected `{}` fields, got `{}` fields",
+                        &[
+                            const_uint_formating(&mut buffer_a, Q::SqlType::DESERIALIZER.len()),
+                            const_uint_formating(&mut buffer_b, s.fields.len()),
+                        ],
+                    );
                 }
                 let mut counter = 0;
                 while counter < s.fields.len() {
@@ -138,7 +150,10 @@ where
                     let facet_type = s.fields[counter].shape();
                     counter += 1;
                     if !equal_types(diesel_target_type, facet_type) {
-                        panic!("Mismatching types expected");
+                        const_panic_with_arguments(
+                            "field type mismatch for field `{}`",
+                            &[s.fields[counter].name],
+                        );
                     }
                 }
             }
@@ -237,7 +252,7 @@ where
 {
     const {
         if !matches!(T::SHAPE.ty, facet::Type::User(facet::UserType::Struct(_))) {
-            panic!("Only structs expetced")
+            panic!("Only structs are expected");
         }
     }
     // todo: we need some const checks here
@@ -326,6 +341,72 @@ where
         .pop()
         .map_err(|e| diesel::result::Error::DeserializationError(Box::new(e)))?;
     Ok(wip)
+}
+
+#[track_caller]
+#[expect(
+    non_fmt_panics,
+    reason = "That's exactly what we want to do here, as there is no other way to emit \"runtime errors\" in const blocks otherwise"
+)]
+const fn const_panic_with_arguments(format_str: &str, args: &[&str]) -> ! {
+    let mut out = [0_u8; 10000];
+    let format_string_bin = format_str.as_bytes();
+    let mut out_counter = 0;
+    let mut arg_counter = 0;
+    let mut format_string_counter = 0;
+    while format_string_counter < format_string_bin.len() {
+        let c = format_string_bin[format_string_counter];
+        if c == b'{' {
+            assert!(format_string_bin[format_string_counter + 1] == b'}');
+            let mut arg_char_counter = 0;
+            let arg_bin = args[arg_counter].as_bytes();
+            while arg_char_counter < arg_bin.len() {
+                out[out_counter] = arg_bin[arg_char_counter];
+                arg_char_counter += 1;
+                out_counter += 1;
+            }
+            format_string_counter += 2;
+            arg_counter += 1;
+        } else {
+            out[out_counter] = c;
+            out_counter += 1;
+            format_string_counter += 1;
+        }
+    }
+    let out = buffer_to_str(&out, out_counter);
+    let out: &'static str = unsafe { std::mem::transmute(out) };
+    panic!(out)
+}
+
+const fn buffer_to_str(out: &[u8], out_counter: usize) -> &str {
+    let out = unsafe {
+        let ptr = out.as_ptr();
+        let shortened_slice = std::slice::from_raw_parts(ptr, out_counter);
+        str::from_utf8_unchecked(shortened_slice)
+    };
+    out
+}
+
+const fn const_uint_formating(out_buffer: &mut [u8], mut i: usize) -> &str {
+    let mut out = [0_u8; 100];
+    let mut out_counter = 0;
+    if i == 0 {
+        out[0] = b'0';
+        out_counter += 1;
+    } else {
+        while i != 0 {
+            let last_digit = i % 10;
+            i = i / 10;
+            out[out_counter] = last_digit as u8 + b'0';
+            out_counter += 1;
+        }
+    }
+    let mut out_counter2 = out_counter;
+    while out_counter2 > 0 {
+        out_buffer[out_counter - out_counter2] = out[out_counter2 - 1];
+        out_counter2 -= 1;
+    }
+    buffer_to_str(out_buffer, out_counter)
 }
 
 #[test]
